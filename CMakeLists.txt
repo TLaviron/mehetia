@@ -19,11 +19,14 @@ add_subdirectory(third_party)
 
 set(LIBRARIES ${Vulkan_LIBRARIES} glfw glm)
 
-set(SOURCES src/mainTest.cpp)
 
-add_executable(demo ${SOURCES})
+set(HEADERS include/mainApplication.h)
+set(SOURCES src/mainTest.cpp src/mainApplication.cpp)
+
+add_executable(demo ${SOURCES} ${HEADERS})
+target_include_directories(demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(demo PRIVATE ${LIBRARIES})
 
-set_property(TARGET demo PROPERTY CXX_STANDARD 14)
+set_property(TARGET demo PROPERTY CXX_STANDARD 17)
 set_property(TARGET demo PROPERTY CXX_STANDARD_REQUIRED YES)
 
