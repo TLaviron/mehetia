@@ -105,7 +105,7 @@ std::ostream& operator<<(std::ostream& _os, const InstanceInfo& _instanceInfo){
 
 class MainApplication::Pimpl{
 public:
-    Pimpl() : m_pWindow(nullptr) {
+    Pimpl() : m_pWindow(nullptr), m_instance{} {
         glfwInit();
 
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -124,6 +124,8 @@ public:
     }
 
     void cleanup(){
+        vkDestroyInstance(m_instance, nullptr);
+
         glfwDestroyWindow(m_pWindow);
 
         glfwTerminate();
@@ -132,8 +134,29 @@ public:
 private:
     GLFWwindow* m_pWindow;
     std::unique_ptr<InstanceInfo> m_pInstanceInfo;
+    VkInstance m_instance;
 
-    void createInstance();
+    void createInstance(){
+        VkApplicationInfo appInfo{};
+        appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+        appInfo.pApplicationName = "Mehetia";
+        appInfo.applicationVersion = VK_MAKE_VERSION(0, 0, 1);
+        appInfo.pEngineName = "No Engine";
+        appInfo.engineVersion = VK_MAKE_VERSION(0, 0, 1);
+        appInfo.apiVersion = VK_API_VERSION_1_0;
+
+        VkInstanceCreateInfo instanceInfo{};
+        instanceInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+        instanceInfo.pApplicationInfo = &appInfo;
+
+        uint32_t glfwWSIExtensionCount{};
+        const char** glfwWSIExstensions = glfwGetRequiredInstanceExtensions(&glfwWSIExtensionCount);
+        instanceInfo.enabledExtensionCount = glfwWSIExtensionCount;
+        instanceInfo.ppEnabledExtensionNames = glfwWSIExstensions;
+
+        vkCreateInstance(&instanceInfo, nullptr, &m_instance);
+
+    }
 };
 
 
