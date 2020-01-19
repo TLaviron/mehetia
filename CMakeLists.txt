@@ -20,8 +20,16 @@ add_subdirectory(third_party)
 set(LIBRARIES ${Vulkan_LIBRARIES} glfw glm)
 
 
-set(HEADERS include/mainApplication.h)
-set(SOURCES src/mainTest.cpp src/mainApplication.cpp)
+set(HEADERS
+	include/mainApplication.h
+	include/vulkan_mehetia/utilities.h
+	)
+
+set(SOURCES
+	src/mainTest.cpp
+	src/mainApplication.cpp
+	src/vulkan_mehetia/utilities.cpp
+	)
 
 add_executable(demo ${SOURCES} ${HEADERS})
 target_include_directories(demo PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)

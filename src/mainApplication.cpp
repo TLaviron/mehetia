@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "mainApplication.h"
+#include "vulkan_mehetia/utilities.h"
 
 constexpr uint32_t vkVersionMajor(uint32_t _version) noexcept {
     return _version >> 22;
@@ -154,7 +155,7 @@ private:
         instanceInfo.enabledExtensionCount = glfwWSIExtensionCount;
         instanceInfo.ppEnabledExtensionNames = glfwWSIExstensions;
 
-        vkCreateInstance(&instanceInfo, nullptr, &m_instance);
+        RESULT_CHECK(vkCreateInstance(&instanceInfo, nullptr, &m_instance));
 
     }
 };
