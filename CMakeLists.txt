@@ -18,7 +18,7 @@ endif()
 
 add_subdirectory(third_party)
 
-set(LIBRARIES ${Vulkan_LIBRARIES} glfw glm)
+set(LIBRARIES ${Vulkan_LIBRARIES} glfw glm volk)
 
 
 set(HEADERS
