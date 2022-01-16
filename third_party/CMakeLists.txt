@@ -18,4 +18,10 @@ FetchContent_Declare(
     GIT_TAG         760a782f295a66de7391d6ed573d65e3fb1c8450 # release 1.2.190
     )
 
+if (WIN32)
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
+else()
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_XCB_KHR)
+endif()
+
 fetchContent_MakeAvailable(glm glfw volk)

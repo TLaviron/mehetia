@@ -129,10 +129,19 @@ std::ostream& operator<<(std::ostream& _os, const InstanceInfo& _instanceInfo){
     return _instanceInfo.toStream(_os);
 }
 
+struct PerFrameResources
+{
+    VkCommandPool m_pool;
+    VkCommandBuffer m_commandBuffer;
+    VkFence m_fence;
+    VkSemaphore m_acquireSemaphore;
+    VkSemaphore m_submitSemaphore;
+};
+
 
 class MainApplication::Pimpl{
 public:
-    Pimpl() : m_pWindow(nullptr), m_instance{} {
+    Pimpl() {
         glfwInit();
         RESULT_CHECK(volkInitialize());
 
@@ -146,15 +155,92 @@ public:
         createInstance();
 
         createDevice();
+
+        setupPerFrameResources();
+
+        createSwapchain(800, 600);
     }
 
     void run(){
         while(!glfwWindowShouldClose(m_pWindow)) {
             glfwPollEvents();
+
+            VkResult res = vkGetFenceStatus(m_device, m_perFrame[m_frameID].m_fence);
+            if (res == VK_NOT_READY) {
+                RESULT_CHECK(vkWaitForFences(m_device, 1, &m_perFrame[m_frameID].m_fence, VK_TRUE, UINT64_MAX));
+            } else {
+                RESULT_CHECK(res);
+            }
+
+            RESULT_CHECK(vkResetFences(m_device, 1, &m_perFrame[m_frameID].m_fence));
+
+            RESULT_CHECK(vkResetCommandPool(m_device, m_perFrame[m_frameID].m_pool, 0));
+
+            uint32_t imageIndex = 0;
+            RESULT_CHECK(vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX,
+                m_perFrame[m_frameID].m_acquireSemaphore, VK_NULL_HANDLE, &imageIndex));
+
+            VkCommandBufferBeginInfo beginInfo{};
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            RESULT_CHECK(vkBeginCommandBuffer(m_perFrame[m_frameID].m_commandBuffer, &beginInfo));
+
+
+            VkImageMemoryBarrier imageBarrier{};
+            imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            imageBarrier.srcAccessMask = 0;
+            imageBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            imageBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            imageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            imageBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageBarrier.image = m_swapchainImages[imageIndex];
+            imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            imageBarrier.subresourceRange.baseArrayLayer = 0;
+            imageBarrier.subresourceRange.layerCount = 1;
+            imageBarrier.subresourceRange.baseMipLevel = 0;
+            imageBarrier.subresourceRange.levelCount = 1;
+
+
+            vkCmdPipelineBarrier(m_perFrame[m_frameID].m_commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
+
+            RESULT_CHECK(vkEndCommandBuffer(m_perFrame[m_frameID].m_commandBuffer));
+
+            VkSubmitInfo submitInfo{};
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.waitSemaphoreCount = 1;
+            submitInfo.pWaitSemaphores = &m_perFrame[m_frameID].m_acquireSemaphore;
+
+            VkPipelineStageFlags acquireWaitMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            submitInfo.pWaitDstStageMask = &acquireWaitMask;
+            submitInfo.commandBufferCount = 1;
+            submitInfo.pCommandBuffers = &m_perFrame[m_frameID].m_commandBuffer;
+            submitInfo.signalSemaphoreCount = 1;
+            submitInfo.pSignalSemaphores = &m_perFrame[m_frameID].m_submitSemaphore;
+            RESULT_CHECK(vkQueueSubmit(m_graphicsQueue, 1, &submitInfo, m_perFrame[m_frameID].m_fence));
+
+            VkPresentInfoKHR presentInfo{};
+            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores = &m_perFrame[m_frameID].m_submitSemaphore;
+            presentInfo.swapchainCount = 1;
+            presentInfo.pSwapchains = &m_swapchain;
+            presentInfo.pImageIndices = &imageIndex;
+            RESULT_CHECK(vkQueuePresentKHR(m_graphicsQueue, &presentInfo));
+
+            m_frameID = (m_frameID + 1) % m_perFrame.size();
+
         }
     }
 
     void cleanup(){
+        vkQueueWaitIdle(m_graphicsQueue);
+
+        destroySwapchain();
+
+        tearDownPerFrameResources();
+
         vkDestroyDevice(m_device, nullptr);
 
         if (m_debugMessenger != VK_NULL_HANDLE)
@@ -185,12 +271,21 @@ public:
     }
 
 private:
-    GLFWwindow* m_pWindow;
+    GLFWwindow* m_pWindow = nullptr;
     std::unique_ptr<InstanceInfo> m_pInstanceInfo;
-    VkInstance m_instance;
-    VkDevice m_device;
-    VkDebugUtilsMessengerEXT m_debugMessenger;
+    VkInstance m_instance = VK_NULL_HANDLE;
+    VkPhysicalDevice m_physicalDevice = VK_NULL_HANDLE;
+    VkDevice m_device = VK_NULL_HANDLE;
+    VkDebugUtilsMessengerEXT m_debugMessenger = VK_NULL_HANDLE;
 
+    VkSurfaceKHR m_windowSurface = VK_NULL_HANDLE;
+    VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
+    std::vector<VkImage> m_swapchainImages;
+
+    VkQueue m_graphicsQueue = VK_NULL_HANDLE;
+    uint32_t m_graphicsQueueIndex = 0;
+    std::array<PerFrameResources, 2> m_perFrame;
+    uint32_t m_frameID = 0;
 
     void createInstance(){
         VkApplicationInfo appInfo{};
@@ -283,13 +378,13 @@ private:
         }
 
         assert(isDeviceSuitable(properties[selectedDevice]));
+        m_physicalDevice = physicalDevices[selectedDevice];
 
-        uint32_t graphicsQueueIndex = 0;
         for (uint32_t i = 0; i < queueFamilyProperties[selectedDevice].size(); ++i)
         {
             if (queueFamilyProperties[selectedDevice][i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
             {
-                graphicsQueueIndex = i;
+                m_graphicsQueueIndex = i;
                 break;
             }
         }
@@ -300,7 +395,7 @@ private:
         queueInfo[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueInfo[0].pNext = nullptr;
         queueInfo[0].flags = 0;
-        queueInfo[0].queueFamilyIndex = graphicsQueueIndex;
+        queueInfo[0].queueFamilyIndex = m_graphicsQueueIndex;
         queueInfo[0].queueCount = 1;
         queueInfo[0].pQueuePriorities = &queuePriority;
 
@@ -309,8 +404,17 @@ private:
         deviceInfo.pQueueCreateInfos = queueInfo.data();
         deviceInfo.queueCreateInfoCount = queueInfo.size();
 
+        std::vector<const char*> extensions = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        };
+
+        deviceInfo.enabledExtensionCount = extensions.size();
+        deviceInfo.ppEnabledExtensionNames = extensions.data();
+
         RESULT_CHECK(vkCreateDevice(physicalDevices[selectedDevice], &deviceInfo, nullptr, &m_device));
         volkLoadDevice(m_device);
+
+        vkGetDeviceQueue(m_device, m_graphicsQueueIndex, 0, &m_graphicsQueue);
     }
 
     void setupDebugMessenger() {
@@ -337,6 +441,97 @@ private:
     {
         return true;
     }
+
+    void setupPerFrameResources(){
+        VkCommandPoolCreateInfo poolInfo{};
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.queueFamilyIndex = m_graphicsQueueIndex;
+
+        VkCommandBufferAllocateInfo cmdBufferInfo{};
+        cmdBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cmdBufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmdBufferInfo.commandBufferCount = 1;
+
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+        VkSemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+        for (PerFrameResources &resources : m_perFrame){
+            RESULT_CHECK(vkCreateCommandPool(m_device, &poolInfo, nullptr, &resources.m_pool));
+
+            cmdBufferInfo.commandPool = resources.m_pool;
+            RESULT_CHECK(vkAllocateCommandBuffers(m_device, &cmdBufferInfo, &resources.m_commandBuffer));
+
+            RESULT_CHECK(vkCreateFence(m_device, &fenceInfo, nullptr, &resources.m_fence));
+            RESULT_CHECK(vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &resources.m_acquireSemaphore));
+            RESULT_CHECK(vkCreateSemaphore(m_device, &semaphoreInfo, nullptr, &resources.m_submitSemaphore));
+        }
+    }
+
+    void tearDownPerFrameResources(){
+        for (PerFrameResources &resources : m_perFrame){
+            vkDestroySemaphore(m_device, resources.m_acquireSemaphore, nullptr);
+            vkDestroySemaphore(m_device, resources.m_submitSemaphore, nullptr);
+            vkDestroyFence(m_device, resources.m_fence, nullptr);
+
+            vkDestroyCommandPool(m_device, resources.m_pool, nullptr);
+        }
+    }
+
+    void createSwapchain(uint32_t width, uint32_t height){
+        RESULT_CHECK(glfwCreateWindowSurface(m_instance, m_pWindow, nullptr, &m_windowSurface));
+
+        VkBool32 bPresentSupported = VK_FALSE;
+        RESULT_CHECK(vkGetPhysicalDeviceSurfaceSupportKHR(m_physicalDevice, m_graphicsQueueIndex,
+            m_windowSurface, &bPresentSupported));
+
+        assert(bPresentSupported);
+
+        VkSurfaceCapabilitiesKHR surfaceCapabilities{};
+
+        RESULT_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physicalDevice, m_windowSurface,
+            &surfaceCapabilities));
+
+        assert((surfaceCapabilities.supportedTransforms & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) != 0);
+        assert((surfaceCapabilities.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) != 0);
+
+        VkSwapchainCreateInfoKHR swapchainInfo{};
+        swapchainInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+        swapchainInfo.surface = m_windowSurface;
+        swapchainInfo.minImageCount = 3;
+        swapchainInfo.imageFormat = VK_FORMAT_B8G8R8A8_SRGB;
+        swapchainInfo.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
+        swapchainInfo.imageExtent.width = width;
+        swapchainInfo.imageExtent.height = height;
+        swapchainInfo.imageArrayLayers = 1;
+        swapchainInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        swapchainInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        swapchainInfo.queueFamilyIndexCount = 1;
+        swapchainInfo.pQueueFamilyIndices = &m_graphicsQueueIndex;
+        swapchainInfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+        swapchainInfo.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
+        swapchainInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+
+
+        RESULT_CHECK(vkCreateSwapchainKHR(m_device, &swapchainInfo, nullptr, &m_swapchain));
+
+        uint32_t imageCount = 0;
+        RESULT_CHECK(vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, nullptr));
+
+        assert(imageCount >= 2);
+        m_swapchainImages.resize(imageCount);
+        RESULT_CHECK(vkGetSwapchainImagesKHR(m_device, m_swapchain, &imageCount, m_swapchainImages.data()));
+    }
+
+    void destroySwapchain(){
+vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+
+        vkDestroySurfaceKHR(m_instance, m_windowSurface, nullptr);
+    }
+
 };
 
 
